@@ -216,3 +216,13 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# loockit local config (contains device keys) — keep out of git
+/config.toml
+/config/
+
+# loockit Matter device state (contains keys / fabric info)
+/matter-device-state.json
+
+# loockit history database
+/loockit-history.sqlite3

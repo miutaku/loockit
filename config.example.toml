@@ -1,0 +1,62 @@
+# loockit example configuration.
+#
+# Copy to config.toml and fill in your device details. Secret/public keys can be
+# kept out of this file by exporting them as environment variables instead, e.g.
+# for device id "front-door":
+#   export LOOCKIT_FRONT_DOOR_SECRET_KEY=...
+#   export LOOCKIT_FRONT_DOOR_PUBLIC_KEY=...
+#
+# Obtain secret_key / public_key by decoding the QR code exported from the
+# official SESAME app: https://sesame-qr-reader.vercel.app/
+
+[grpc]
+host = "0.0.0.0"
+port = 50051
+
+[matter]
+# Matter bridge is opt-in and requires the optional `matter` extra installed.
+enabled = false
+port = 5540
+
+[rest]
+# REST + WebSocket API (requires the `rest` extra: fastapi + uvicorn).
+enabled = false
+host = "0.0.0.0"
+port = 8080
+
+[mqtt]
+# MQTT / Home Assistant bridge (requires the `mqtt` extra: aiomqtt).
+enabled = false
+host = "localhost"
+port = 1883
+# username = "loockit"
+# password = "secret"
+discovery_prefix = "homeassistant"   # Home Assistant MQTT Discovery prefix
+base_topic = "loockit"
+
+[history]
+# Persist state changes & command attempts to SQLite; query via REST/gRPC.
+enabled = false
+path = "loockit-history.sqlite3"
+
+# CANDY HOUSE Web API v4 fallback. Off by default; the core never relies on it.
+cloud_fallback = false
+
+[[devices]]
+id = "front-door"
+model = "SESAME4"               # SESAME4 (lock): supports lock / unlock / toggle
+ble_address = "24:71:89:cc:09:05"  # Linux: BD_ADDR. macOS: the CoreBluetooth UUID.
+# secret_key = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+# public_key = "yyyy...."        # 128 hex chars
+# Optional cloud fallback for this device (used only if cloud_fallback = true):
+# [devices.cloud]
+# uuid = "00000000-0000-0000-0000-000000000000"
+# api_key = "your-candyhouse-web-api-key"
+# secret_key = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+[[devices]]
+id = "desk-bot"
+model = "SESAMEBOT1"            # SESAME Bot1 (button pusher): supports click
+ble_address = "24:71:89:aa:bb:cc"
+# secret_key = "..."
+# public_key = "..."

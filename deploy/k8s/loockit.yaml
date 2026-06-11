@@ -1,0 +1,158 @@
+# loockit on RKE2 (Raspberry Pi 4B, arm64).
+#
+# BLE control uses the *host's* BlueZ over D-Bus, so the pod runs with
+# hostNetwork + the host system D-Bus socket + privileged. It is pinned to the
+# Pi that has the Bluetooth adapter and sits near the SESAME devices.
+#
+#   1) edit the nodeSelector hostname, the Secret keys, and config.toml below
+#   2) kubectl apply -f deploy/k8s/loockit.yaml
+#
+# See deploy/README.md for the arm64 image build + containerd import steps.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: loockit
+---
+# Device keys, injected as env vars that override config.toml.
+# For device id "front-door" the override names are
+#   LOOCKIT_FRONT_DOOR_SECRET_KEY / LOOCKIT_FRONT_DOOR_PUBLIC_KEY
+# (id uppercased, non-alphanumerics -> "_"). Decode them from the SESAME app QR:
+#   https://sesame-qr-reader.vercel.app/
+apiVersion: v1
+kind: Secret
+metadata:
+  name: loockit-keys
+  namespace: loockit
+type: Opaque
+stringData:
+  LOOCKIT_FRONT_DOOR_SECRET_KEY: "REPLACE_ME"
+  LOOCKIT_FRONT_DOOR_PUBLIC_KEY: "REPLACE_ME"
+  LOOCKIT_DESK_BOT_SECRET_KEY: "REPLACE_ME"
+  LOOCKIT_DESK_BOT_PUBLIC_KEY: "REPLACE_ME"
+---
+# Non-secret config. Keys are supplied via the Secret above, so they are omitted
+# here. Fill in the real ble_address values from `loockit scan`.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loockit-config
+  namespace: loockit
+data:
+  config.toml: |
+    [grpc]
+    host = "0.0.0.0"
+    port = 50051
+
+    [rest]
+    enabled = true
+    host = "0.0.0.0"
+    port = 8080
+
+    # Enable after BLE works; needs avahi-daemon on the host (see deploy/README.md).
+    [matter]
+    enabled = false
+
+    [mqtt]
+    enabled = false
+
+    [history]
+    enabled = true
+    path = "/data/loockit-history.sqlite3"
+
+    [[devices]]
+    id = "front-door"
+    model = "SESAME4"
+    ble_address = "XX:XX:XX:XX:XX:XX"   # from `loockit scan`
+
+    [[devices]]
+    id = "desk-bot"
+    model = "SESAMEBOT1"
+    ble_address = "YY:YY:YY:YY:YY:YY"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loockit
+  namespace: loockit
+spec:
+  replicas: 1
+  # Never run two pods: they would fight over the single Bluetooth adapter.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: loockit
+  template:
+    metadata:
+      labels:
+        app: loockit
+    spec:
+      # Pin to the Pi with the Bluetooth adapter near the devices.
+      nodeSelector:
+        kubernetes.io/hostname: REPLACE_WITH_PI_HOSTNAME
+      # BlueZ/mDNS are host-level; share the host network and DNS.
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: loockit
+          image: loockit:0.1.0
+          imagePullPolicy: IfNotPresent
+          args: ["run", "--config", "/config/config.toml", "-v"]
+          # privileged is the reliable way to reach the host Bluetooth via BlueZ.
+          securityContext:
+            privileged: true
+          envFrom:
+            - secretRef:
+                name: loockit-keys
+          ports:
+            - name: grpc
+              containerPort: 50051
+            - name: rest
+              containerPort: 8080
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: dbus
+              mountPath: /run/dbus
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: loockit-config
+        # Host system D-Bus socket so bleak can talk to BlueZ.
+        - name: dbus
+          hostPath:
+            path: /run/dbus
+            type: Directory
+        # Persist the history DB (and Matter state if enabled) across restarts.
+        - name: data
+          hostPath:
+            path: /var/lib/loockit
+            type: DirectoryOrCreate
+---
+# Optional: reach gRPC/REST from inside the cluster. With hostNetwork the pod IP
+# equals the node IP, so you can also just hit <pi-ip>:50051 / :8080 directly.
+apiVersion: v1
+kind: Service
+metadata:
+  name: loockit
+  namespace: loockit
+spec:
+  selector:
+    app: loockit
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: 50051
+    - name: rest
+      port: 8080
+      targetPort: 8080

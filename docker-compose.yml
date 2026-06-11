@@ -1,0 +1,27 @@
+# loockit via Docker Compose.
+#
+# BLE requires direct access to the host Bluetooth stack. The cleanest reliable
+# setup is host networking + sharing the system D-Bus socket so bleak can reach
+# BlueZ. This implies the container effectively runs on the host's network.
+#
+#   docker compose up --build            # real BLE (needs host bluetooth)
+#   docker compose run --rm loockit run --simulate -v   # no hardware needed
+services:
+  loockit:
+    build: .
+    # host networking so gRPC (50051) / Matter (5540) and BLE work without NAT.
+    network_mode: host
+    # Bluetooth via BlueZ over the host system D-Bus.
+    volumes:
+      - /var/run/dbus:/var/run/dbus
+      - ./config:/config:ro
+    # CAP_NET_ADMIN/CAP_NET_RAW help with BLE scanning on some hosts.
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    restart: unless-stopped
+    # Secrets can be injected as env instead of living in the config file:
+    # environment:
+    #   - LOOCKIT_FRONT_DOOR_SECRET_KEY=...
+    #   - LOOCKIT_FRONT_DOOR_PUBLIC_KEY=...
+    command: ["run", "--config", "/config/config.toml", "-v"]

@@ -1,0 +1,113 @@
+syntax = "proto3";
+
+package sesame;
+
+// Control and observe SESAME4 / SESAME Bot1 devices.
+service SesameService {
+  // List all configured devices and their last known state.
+  rpc ListDevices(Empty) returns (DeviceList);
+  // Get the last known state of a single device.
+  rpc GetStatus(DeviceRef) returns (DeviceState);
+
+  // Lock / Unlock / Toggle apply to SESAME4 (a lock).
+  rpc Lock(CommandRequest) returns (CommandResult);
+  rpc Unlock(CommandRequest) returns (CommandResult);
+  rpc Toggle(CommandRequest) returns (CommandResult);
+  // Click applies to SESAME Bot1 (a button pusher).
+  rpc Click(CommandRequest) returns (CommandResult);
+
+  // Server-streaming real-time state updates. Optionally filter by device id.
+  rpc StreamStatus(StreamRequest) returns (stream DeviceState);
+
+  // Operation history / persisted state changes (requires history enabled).
+  rpc GetHistory(HistoryRequest) returns (HistoryList);
+}
+
+message Empty {}
+
+message DeviceRef {
+  string device_id = 1;
+}
+
+enum Model {
+  MODEL_UNSPECIFIED = 0;
+  SESAME4 = 1;
+  SESAME_BOT1 = 2;
+}
+
+enum LockState {
+  LOCK_STATE_UNKNOWN = 0;
+  LOCKED = 1;
+  UNLOCKED = 2;
+  MOVING = 3;
+}
+
+enum Source {
+  SOURCE_UNSPECIFIED = 0;
+  BLE = 1;
+  CLOUD = 2;
+  SIM = 3;
+}
+
+message DeviceState {
+  string device_id = 1;
+  Model model = 2;
+  LockState lock_state = 3;
+  bool online = 4;
+  // Optional fields: presence indicated by has_* companions.
+  int32 battery_percent = 5;
+  bool has_battery_percent = 6;
+  double battery_voltage = 7;
+  bool has_battery_voltage = 8;
+  int32 position = 9;       // SESAME4 only
+  bool has_position = 10;
+  int32 motor_status = 11;  // SESAME Bot1 only
+  bool has_motor_status = 12;
+  Source source = 13;
+  double timestamp = 14;    // unix seconds
+}
+
+message DeviceList {
+  repeated DeviceState devices = 1;
+}
+
+message CommandRequest {
+  string device_id = 1;
+  string history_tag = 2;  // optional; defaults to "loockit"
+}
+
+message CommandResult {
+  bool ok = 1;
+  string message = 2;
+  DeviceState state = 3;
+}
+
+message StreamRequest {
+  string device_id = 1;  // optional; empty = all devices
+}
+
+message HistoryRequest {
+  string device_id = 1;  // optional; empty = all devices
+  string kind = 2;       // optional; "state" or "command"
+  int32 limit = 3;       // default 100 when 0
+}
+
+message HistoryEntry {
+  int64 id = 1;
+  string kind = 2;        // "state" | "command"
+  string device_id = 3;
+  double timestamp = 4;
+  // state fields
+  string lock_state = 5;
+  int32 battery_percent = 6;
+  bool online = 7;
+  string source = 8;
+  // command fields
+  string action = 9;
+  bool ok = 10;
+  string error = 11;
+}
+
+message HistoryList {
+  repeated HistoryEntry entries = 1;
+}
