@@ -42,6 +42,8 @@ class BleController(DeviceController):
         self._device = None  # pysesameos2 CHSesame2 | CHSesameBot
         self._loop: asyncio.AbstractEventLoop | None = None
         self._reconnect_task: asyncio.Task | None = None
+        self._session_lock = asyncio.Lock()
+        self._connecting = False
         self._closing = False
         self._state = DeviceState(
             device_id=config.id,
@@ -70,41 +72,64 @@ class BleController(DeviceController):
         from pysesameos2.ble import CHBleManager
         from pysesameos2.device import CHDeviceKey
 
-        logger.info("scanning for %s (%s)", self.config.id, self.config.ble_address)
-        device = await CHBleManager().scan_by_address(
-            ble_device_identifier=self.config.ble_address,
-            scan_duration=self._scan_duration,
-        )
+        async with self._session_lock:
+            self._connecting = True
+            device = None
+            try:
+                await self._close_current_device()
+                logger.info(
+                    "scanning for %s (%s)", self.config.id, self.config.ble_address
+                )
+                device = await CHBleManager().scan_by_address(
+                    ble_device_identifier=self.config.ble_address,
+                    scan_duration=self._scan_duration,
+                )
 
-        key = CHDeviceKey()
-        key.setSecretKey(self.config.secret_key)
-        key.setSesame2PublicKey(self.config.public_key)
-        device.setKey(key)
-        device.setDeviceStatusCallback(self._on_device_state)
+                key = CHDeviceKey()
+                key.setSecretKey(self.config.secret_key)
+                key.setSesame2PublicKey(self.config.public_key)
+                device.setKey(key)
+                device.setDeviceStatusCallback(self._on_device_state)
 
-        await device.connect()
-        await device.wait_for_login()
-        self._device = device
-        logger.info("%s logged in", self.config.id)
-        # Push an immediate snapshot now that mech status is available.
-        self._on_device_state(device)
+                await device.connect()
+                await device.wait_for_login()
+                self._device = device
+                logger.info("%s logged in", self.config.id)
+                # wait_for_login is authoritative even if the library's last
+                # transient status is Busy (which it classifies as UnLogin).
+                state = self._translate(device).evolve(online=True)
+                self._state = state
+                self._emit(state)
+            except Exception:
+                if device is not None and device is not self._device:
+                    await self._disconnect_device(device)
+                raise
+            finally:
+                self._connecting = False
+
+    async def _disconnect_device(self, device) -> None:
+        disconnect = getattr(device, "disconnect", None)
+        if disconnect is None:
+            return
+        try:
+            result = disconnect()
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception:  # pragma: no cover - best-effort teardown
+            logger.debug("error during disconnect", exc_info=True)
+
+    async def _close_current_device(self) -> None:
+        device = self._device
+        self._device = None
+        if device is not None:
+            await self._disconnect_device(device)
 
     async def disconnect(self) -> None:
         self._closing = True
         if self._reconnect_task is not None:
             self._reconnect_task.cancel()
             self._reconnect_task = None
-        device = self._device
-        self._device = None
-        if device is not None:
-            disconnect = getattr(device, "disconnect", None)
-            try:
-                if disconnect is not None:
-                    result = disconnect()
-                    if asyncio.iscoroutine(result):
-                        await result
-            except Exception:  # pragma: no cover - best-effort teardown
-                logger.debug("error during disconnect", exc_info=True)
+        await self._close_current_device()
         self._state = self._state.evolve(online=False)
         self._emit(self._state)
 
@@ -131,6 +156,9 @@ class BleController(DeviceController):
 
     def _on_device_state(self, device) -> None:
         """Synchronous callback from pysesameos2; translate & emit."""
+        if self._device is not None and device is not self._device:
+            logger.debug("ignoring state from stale BLE session for %s", self.config.id)
+            return
         try:
             state = self._translate(device)
         except Exception:  # pragma: no cover - defensive
@@ -138,7 +166,7 @@ class BleController(DeviceController):
             return
         self._state = state
         self._emit(state)
-        if not state.online and not self._closing:
+        if not state.online and not self._closing and not self._connecting:
             self._schedule_reconnect()
 
     def _translate(self, device) -> DeviceState:
@@ -147,7 +175,14 @@ class BleController(DeviceController):
         mech = device.getMechStatus()
         dev_status = device.getDeviceStatus()
         # CHSesame2Status.value is CHDeviceLoginStatus.Login when authenticated.
-        online = getattr(getattr(dev_status, "value", None), "name", "") == "Login"
+        status_name = getattr(dev_status, "name", "")
+        logged_in = getattr(getattr(dev_status, "value", None), "name", "") == "Login"
+        # pysesameos2 maps the transient Busy status to UnLogin even though the
+        # authenticated GATT session remains usable. Only NoBleSignal means an
+        # established current session has actually gone away.
+        online = logged_in or (
+            device is self._device and status_name not in {"", "NoBleSignal"}
+        )
 
         lock_state = LockState.UNKNOWN
         battery_percent = self._state.battery_percent
@@ -204,8 +239,9 @@ class BleController(DeviceController):
             try:
                 logger.info("reconnecting to %s", self.config.id)
                 await self._open_session()
-                logger.info("reconnected to %s", self.config.id)
-                return
+                if self._state.online:
+                    logger.info("reconnected to %s", self.config.id)
+                    return
             except Exception as exc:
                 logger.warning("reconnect to %s failed: %s", self.config.id, exc)
                 delay = min(delay * 2, _RECONNECT_MAX)
