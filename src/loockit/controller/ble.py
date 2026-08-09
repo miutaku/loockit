@@ -58,7 +58,13 @@ class BleController(DeviceController):
         self.config.require_keys()
         self._closing = False
         self._loop = asyncio.get_running_loop()
-        await self._open_session()
+        try:
+            await self._open_session()
+        except Exception:
+            # A BLE advertisement can be missed during the initial scan. Keep
+            # retrying just as we do after an established connection drops.
+            self._schedule_reconnect()
+            raise
 
     async def _open_session(self) -> None:
         from pysesameos2.ble import CHBleManager
