@@ -66,6 +66,49 @@ def test_unknown_action_404(client):
     assert r.status_code == 404
 
 
+def test_command_bearer_auth(config):
+    mgr = DeviceManager(config, simulate=True)
+    app = create_app(
+        mgr,
+        manage_lifecycle=True,
+        bearer_token="correct-token",
+        rate_limit_requests=0,
+    )
+    with TestClient(app) as protected:
+        assert protected.post("/devices/desk-bot/click").status_code == 401
+        assert (
+            protected.post(
+                "/devices/desk-bot/click",
+                headers={"Authorization": "Bearer wrong-token"},
+            ).status_code
+            == 401
+        )
+        assert (
+            protected.post(
+                "/devices/desk-bot/click",
+                headers={"Authorization": "Bearer correct-token"},
+            ).status_code
+            == 200
+        )
+
+
+def test_command_rate_limit(config):
+    mgr = DeviceManager(config, simulate=True)
+    app = create_app(
+        mgr,
+        manage_lifecycle=True,
+        bearer_token="token",
+        rate_limit_requests=1,
+        rate_limit_window_seconds=60,
+    )
+    headers = {"Authorization": "Bearer token"}
+    with TestClient(app) as protected:
+        assert protected.post("/devices/desk-bot/click", headers=headers).status_code == 200
+        response = protected.post("/devices/desk-bot/click", headers=headers)
+        assert response.status_code == 429
+        assert response.headers["Retry-After"] == "60"
+
+
 def test_history_endpoint(client):
     client.post("/devices/front-door/lock")
     r = client.get("/history", params={"kind": "command"})

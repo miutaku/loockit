@@ -86,6 +86,9 @@ class RestConfig:
     enabled: bool = False
     host: str = "0.0.0.0"
     port: int = 8080
+    bearer_token: Optional[str] = None
+    rate_limit_requests: int = 5
+    rate_limit_window_seconds: int = 60
 
 
 @dataclass
@@ -224,6 +227,9 @@ def load_config(path: str | os.PathLike, env: Optional[dict] = None) -> AppConfi
         enabled=bool(rest_raw.get("enabled", False)),
         host=str(rest_raw.get("host", "0.0.0.0")),
         port=int(rest_raw.get("port", 8080)),
+        bearer_token=env.get("LOOCKIT_API_BEARER_TOKEN"),
+        rate_limit_requests=int(rest_raw.get("rate_limit_requests", 5)),
+        rate_limit_window_seconds=int(rest_raw.get("rate_limit_window_seconds", 60)),
     )
 
     mqtt_raw = raw.get("mqtt", {})

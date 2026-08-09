@@ -74,7 +74,13 @@ class Application:
         try:
             from .api.rest import create_app, serve_rest
 
-            app = create_app(self.manager, self._history_store)
+            app = create_app(
+                self.manager,
+                self._history_store,
+                bearer_token=self.config.rest.bearer_token,
+                rate_limit_requests=self.config.rest.rate_limit_requests,
+                rate_limit_window_seconds=self.config.rest.rate_limit_window_seconds,
+            )
             self._rest_server, self._rest_task = await serve_rest(
                 app, self.config.rest.host, self.config.rest.port
             )

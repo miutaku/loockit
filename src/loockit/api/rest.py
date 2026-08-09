@@ -17,11 +17,23 @@ Endpoints:
 from __future__ import annotations
 
 import asyncio
+import hmac
 import logging
+import time
+from collections import deque
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import Body, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import (
+    Body,
+    Depends,
+    FastAPI,
+    Header,
+    HTTPException,
+    Query,
+    WebSocket,
+    WebSocketDisconnect,
+)
 
 from ..history import HistoryStore
 from ..manager import DeviceManager
@@ -69,6 +81,9 @@ def create_app(
     history: Optional[HistoryStore] = None,
     *,
     manage_lifecycle: bool = False,
+    bearer_token: Optional[str] = None,
+    rate_limit_requests: int = 5,
+    rate_limit_window_seconds: int = 60,
 ) -> FastAPI:
     """Build the FastAPI app.
 
@@ -88,6 +103,37 @@ def create_app(
                 await manager.stop()
 
     app = FastAPI(title="loockit", version="0.1.0", lifespan=lifespan)
+    command_times: deque[float] = deque()
+    rate_lock = asyncio.Lock()
+
+    async def authorize_command(authorization: Optional[str] = Header(None)) -> None:
+        if bearer_token:
+            scheme, separator, supplied = (authorization or "").partition(" ")
+            if (
+                not separator
+                or scheme.lower() != "bearer"
+                or not hmac.compare_digest(supplied, bearer_token)
+            ):
+                raise HTTPException(
+                    status_code=401,
+                    detail="invalid bearer token",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+
+        if rate_limit_requests <= 0:
+            return
+        now = time.monotonic()
+        cutoff = now - rate_limit_window_seconds
+        async with rate_lock:
+            while command_times and command_times[0] <= cutoff:
+                command_times.popleft()
+            if len(command_times) >= rate_limit_requests:
+                raise HTTPException(
+                    status_code=429,
+                    detail="command rate limit exceeded",
+                    headers={"Retry-After": str(rate_limit_window_seconds)},
+                )
+            command_times.append(now)
 
     @app.get("/healthz")
     async def healthz() -> dict:
@@ -109,6 +155,7 @@ def create_app(
         device_id: str,
         action: str,
         history_tag: str = Body("rest", embed=True),
+        _authorized: None = Depends(authorize_command),
     ) -> dict:
         if action not in _ACTIONS:
             raise HTTPException(status_code=404, detail=f"unknown action: {action}")
