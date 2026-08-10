@@ -100,7 +100,10 @@ class BleController(DeviceController):
                 state = self._translate(device).evolve(online=True)
                 self._state = state
                 self._emit(state)
-            except Exception:
+            except BaseException:
+                # Cancellation is expected when leadership is lost while a
+                # scan/login is in progress.  Always close the partially-open
+                # GATT session so the next leader can connect cleanly.
                 if device is not None and device is not self._device:
                     await self._disconnect_device(device)
                 raise

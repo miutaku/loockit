@@ -13,6 +13,7 @@ class KubernetesLeaseElector:
         self.identity, self.on_acquired, self.on_lost = identity, on_acquired, on_lost
         self.lease_name, self.duration, self.retry_period = lease_name, duration, retry_period
         self.is_leader = self._stopping = False
+        self._activation_task = None
         host = os.environ["KUBERNETES_SERVICE_HOST"]
         port = os.environ.get("KUBERNETES_SERVICE_PORT_HTTPS", "443")
         root = Path("/var/run/secrets/kubernetes.io/serviceaccount")
@@ -76,16 +77,43 @@ class KubernetesLeaseElector:
             except Exception:
                 logger.exception("Kubernetes Lease operation failed"); leader = False
             if leader and not self.is_leader:
-                try:
-                    await self.on_acquired(); await asyncio.to_thread(self._set_active_label, True)
-                    self.is_leader = True; logger.info("acquired BLE leadership as %s", self.identity)
-                except Exception: logger.exception("failed to activate BLE leader")
+                # Do not await BLE discovery/login here.  A scan can take at
+                # least as long as the Lease duration; blocking this loop would
+                # stop renewals and allow the peer to acquire the same Lease.
+                self.is_leader = True
+                logger.info("acquired BLE leadership as %s", self.identity)
+                self._activation_task = asyncio.create_task(self._activate())
             elif not leader and self.is_leader:
-                self.is_leader = False; logger.warning("lost BLE leadership as %s", self.identity)
-                try: await asyncio.to_thread(self._set_active_label, False)
-                finally: await self.on_lost()
+                await self._lose_leadership()
             await asyncio.sleep(self.retry_period)
+
+    async def _activate(self):
+        try:
+            await self.on_acquired()
+            if self.is_leader and not self._stopping:
+                await asyncio.to_thread(self._set_active_label, True)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("failed to activate BLE leader")
+
+    async def _lose_leadership(self):
+        self.is_leader = False
+        logger.warning("lost BLE leadership as %s", self.identity)
+        if self._activation_task is not None and not self._activation_task.done():
+            self._activation_task.cancel()
+            try:
+                await self._activation_task
+            except asyncio.CancelledError:
+                pass
+        self._activation_task = None
+        try:
+            await asyncio.to_thread(self._set_active_label, False)
+        finally:
+            # Disconnect and fence BLE before another local activation can run.
+            await self.on_lost()
 
     async def stop(self):
         self._stopping = True
-        if self.is_leader: self.is_leader = False; await self.on_lost()
+        if self.is_leader:
+            await self._lose_leadership()
