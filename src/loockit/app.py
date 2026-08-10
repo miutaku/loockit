@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
 
 from .api.server import serve
@@ -43,9 +44,11 @@ class Application:
         self._history_recorder = None
         self._rest_server = None
         self._rest_task = None
+        self._active = False
+        self._leader = None
+        self._leader_task = None
 
     async def start(self) -> None:
-        await self.manager.start()
         # History first so it captures startup/replayed states and commands.
         if self.config.history.enabled:
             await self._start_history()
@@ -61,6 +64,27 @@ class Application:
             await self._start_matter()
         if self.config.mqtt.enabled:
             await self._start_mqtt()
+        if os.environ.get("LOOCKIT_LEADER_ELECTION", "").lower() == "true":
+            from .leader import KubernetesLeaseElector
+
+            self._leader = KubernetesLeaseElector(
+                os.environ.get("POD_NAME", os.uname().nodename),
+                self._activate,
+                self._deactivate,
+            )
+            self._leader_task = asyncio.create_task(self._leader.run())
+        else:
+            await self._activate()
+
+    async def _activate(self) -> None:
+        if not self._active:
+            await self.manager.start()
+            self._active = True
+
+    async def _deactivate(self) -> None:
+        if self._active:
+            self._active = False
+            await self.manager.stop()
 
     async def _start_history(self) -> None:
         from .history import HistoryRecorder, HistoryStore
@@ -80,6 +104,7 @@ class Application:
                 bearer_token=self.config.rest.bearer_token,
                 rate_limit_requests=self.config.rest.rate_limit_requests,
                 rate_limit_window_seconds=self.config.rest.rate_limit_window_seconds,
+                is_active=lambda: self._active,
             )
             self._rest_server, self._rest_task = await serve_rest(
                 app, self.config.rest.host, self.config.rest.port
@@ -116,6 +141,10 @@ class Application:
             self._mqtt = None
 
     async def stop(self) -> None:
+        if self._leader is not None:
+            await self._leader.stop()
+        if self._leader_task is not None:
+            self._leader_task.cancel()
         for bridge in (self._matter, self._mqtt):
             if bridge is not None:
                 await bridge.stop()
@@ -132,7 +161,7 @@ class Application:
             await self._history_recorder.stop()
         if self._history_store is not None:
             self._history_store.close()
-        await self.manager.stop()
+        await self._deactivate()
 
     async def run_forever(self) -> None:
         """Start everything and block until SIGINT/SIGTERM."""

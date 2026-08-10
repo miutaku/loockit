@@ -109,6 +109,17 @@ def test_command_rate_limit(config):
         assert response.headers["Retry-After"] == "60"
 
 
+def test_standby_is_live_but_not_ready_and_rejects_commands(config):
+    mgr = DeviceManager(config, simulate=True)
+    app = create_app(mgr, manage_lifecycle=True, is_active=lambda: False)
+    with TestClient(app) as standby:
+        assert standby.get("/healthz").status_code == 200
+        assert standby.get("/readyz").status_code == 503
+        response = standby.post("/devices/desk-bot/click")
+        assert response.status_code == 503
+        assert response.json()["detail"] == "standby replica"
+
+
 def test_history_endpoint(client):
     client.post("/devices/front-door/lock")
     r = client.get("/history", params={"kind": "command"})

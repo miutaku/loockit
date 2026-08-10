@@ -22,7 +22,7 @@ import logging
 import time
 from collections import deque
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Callable, Optional
 
 from fastapi import (
     Body,
@@ -84,6 +84,7 @@ def create_app(
     bearer_token: Optional[str] = None,
     rate_limit_requests: int = 5,
     rate_limit_window_seconds: int = 60,
+    is_active: Callable[[], bool] = lambda: True,
 ) -> FastAPI:
     """Build the FastAPI app.
 
@@ -107,6 +108,8 @@ def create_app(
     rate_lock = asyncio.Lock()
 
     async def authorize_command(authorization: Optional[str] = Header(None)) -> None:
+        if not is_active():
+            raise HTTPException(status_code=503, detail="standby replica")
         if bearer_token:
             scheme, separator, supplied = (authorization or "").partition(" ")
             if (
@@ -138,6 +141,12 @@ def create_app(
     @app.get("/healthz")
     async def healthz() -> dict:
         return {"status": "ok", "devices": manager.device_ids()}
+
+    @app.get("/readyz")
+    async def readyz() -> dict:
+        if not is_active():
+            raise HTTPException(status_code=503, detail="standby replica")
+        return {"status": "ready"}
 
     @app.get("/devices")
     async def list_devices() -> list[dict]:
