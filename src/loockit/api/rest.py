@@ -144,8 +144,6 @@ def create_app(
 
     @app.get("/readyz")
     async def readyz() -> dict:
-        if not is_active():
-            raise HTTPException(status_code=503, detail="standby replica")
         return {"status": "ready"}
 
     @app.get("/devices")

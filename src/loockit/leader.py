@@ -18,6 +18,7 @@ class KubernetesLeaseElector:
         root = Path("/var/run/secrets/kubernetes.io/serviceaccount")
         namespace = (root / "namespace").read_text().strip()
         self.url = f"https://{host}:{port}/apis/coordination.k8s.io/v1/namespaces/{namespace}/leases/{lease_name}"
+        self.pod_url = f"https://{host}:{port}/api/v1/namespaces/{namespace}/pods/{identity}"
         self.token = (root / "token").read_text().strip()
         self.context = ssl.create_default_context(cafile=str(root / "ca.crt"))
 
@@ -31,6 +32,13 @@ class KubernetesLeaseElector:
             headers={"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"})
         with urllib.request.urlopen(request, context=self.context, timeout=5) as response:
             return json.load(response)
+
+    def _set_active_label(self, active):
+        body = {"metadata":{"labels":{"loockit.miutaku/active":"true" if active else None}}}
+        data = json.dumps(body).encode()
+        request = urllib.request.Request(self.pod_url, data=data, method="PATCH",
+            headers={"Authorization": f"Bearer {self.token}", "Content-Type":"application/merge-patch+json"})
+        with urllib.request.urlopen(request, context=self.context, timeout=5): pass
 
     def _try_acquire_or_renew(self):
         now = self._now()
@@ -68,11 +76,14 @@ class KubernetesLeaseElector:
             except Exception:
                 logger.exception("Kubernetes Lease operation failed"); leader = False
             if leader and not self.is_leader:
-                self.is_leader = True; logger.info("acquired BLE leadership as %s", self.identity)
-                try: await self.on_acquired()
+                try:
+                    await self.on_acquired(); await asyncio.to_thread(self._set_active_label, True)
+                    self.is_leader = True; logger.info("acquired BLE leadership as %s", self.identity)
                 except Exception: logger.exception("failed to activate BLE leader")
             elif not leader and self.is_leader:
-                self.is_leader = False; logger.warning("lost BLE leadership as %s", self.identity); await self.on_lost()
+                self.is_leader = False; logger.warning("lost BLE leadership as %s", self.identity)
+                try: await asyncio.to_thread(self._set_active_label, False)
+                finally: await self.on_lost()
             await asyncio.sleep(self.retry_period)
 
     async def stop(self):
