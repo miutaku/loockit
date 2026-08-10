@@ -72,6 +72,14 @@ class KubernetesLeaseElector:
             raise
 
     async def run(self):
+        # Pod labels survive container restarts.  Clear a label left by the
+        # previous process before participating in election, otherwise the
+        # Service can route requests to a standby process until leadership
+        # changes again.
+        try:
+            await asyncio.to_thread(self._set_active_label, False)
+        except Exception:
+            logger.exception("failed to clear stale BLE leader label")
         while not self._stopping:
             try: leader = await asyncio.to_thread(self._try_acquire_or_renew)
             except Exception:

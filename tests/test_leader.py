@@ -50,6 +50,41 @@ async def test_lease_is_renewed_while_ble_activation_is_running():
 
 
 @pytest.mark.asyncio
+async def test_stale_active_label_is_cleared_before_election():
+    labels = []
+    attempted_election = asyncio.Event()
+
+    async def activate():
+        pass
+
+    async def deactivate():
+        pass
+
+    elector = KubernetesLeaseElector.__new__(KubernetesLeaseElector)
+    elector.identity = "pod-a"
+    elector.on_acquired = activate
+    elector.on_lost = deactivate
+    elector.retry_period = 0.01
+    elector.is_leader = False
+    elector._stopping = False
+    elector._activation_task = None
+
+    def elect():
+        attempted_election.set()
+        return False
+
+    elector._try_acquire_or_renew = elect
+    elector._set_active_label = labels.append
+
+    run_task = asyncio.create_task(elector.run())
+    await asyncio.wait_for(attempted_election.wait(), timeout=1)
+    elector._stopping = True
+    await asyncio.wait_for(run_task, timeout=1)
+
+    assert labels[0] is False
+
+
+@pytest.mark.asyncio
 async def test_leadership_loss_cancels_activation_before_disconnect():
     activation_started = asyncio.Event()
     activation_cancelled = asyncio.Event()
