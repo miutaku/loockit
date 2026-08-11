@@ -5,6 +5,36 @@ import pytest
 from loockit.leader import KubernetesLeaseElector
 
 
+def test_kubernetes_token_is_reloaded_for_each_request(tmp_path, monkeypatch):
+    token_path = tmp_path / "token"
+    token_path.write_text("first")
+    authorizations = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    def urlopen(request, **kwargs):
+        authorizations.append(request.get_header("Authorization"))
+        response = Response()
+        response.read = lambda: b"{}"
+        return response
+
+    elector = KubernetesLeaseElector.__new__(KubernetesLeaseElector)
+    elector.token_path = token_path
+    elector.context = None
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+
+    elector._request("GET", "https://kubernetes.invalid/lease")
+    token_path.write_text("second")
+    elector._request("GET", "https://kubernetes.invalid/lease")
+
+    assert authorizations == ["Bearer first", "Bearer second"]
+
+
 @pytest.mark.asyncio
 async def test_lease_is_renewed_while_ble_activation_is_running():
     activation_started = asyncio.Event()
@@ -125,3 +155,24 @@ async def test_leadership_loss_cancels_activation_before_disconnect():
 
     elector._stopping = True
     await asyncio.wait_for(run_task, timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_label_patch_failure_does_not_prevent_local_fencing():
+    disconnected = asyncio.Event()
+
+    async def deactivate():
+        disconnected.set()
+
+    elector = KubernetesLeaseElector.__new__(KubernetesLeaseElector)
+    elector.identity = "pod-a"
+    elector.on_lost = deactivate
+    elector.is_leader = True
+    elector._activation_task = None
+    elector._set_active_label = lambda active: (_ for _ in ()).throw(
+        RuntimeError("API unavailable")
+    )
+
+    await elector._lose_leadership()
+
+    assert disconnected.is_set()

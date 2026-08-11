@@ -20,7 +20,10 @@ class KubernetesLeaseElector:
         namespace = (root / "namespace").read_text().strip()
         self.url = f"https://{host}:{port}/apis/coordination.k8s.io/v1/namespaces/{namespace}/leases/{lease_name}"
         self.pod_url = f"https://{host}:{port}/api/v1/namespaces/{namespace}/pods/{identity}"
-        self.token = (root / "token").read_text().strip()
+        # Projected ServiceAccount tokens are rotated by kubelet.  Keep the
+        # path and read it for every request instead of caching an eventually
+        # expired token for the lifetime of the process.
+        self.token_path = root / "token"
         self.context = ssl.create_default_context(cafile=str(root / "ca.crt"))
 
     @staticmethod
@@ -29,16 +32,18 @@ class KubernetesLeaseElector:
     def _stamp(value): return value.isoformat(timespec="microseconds").replace("+00:00", "Z")
 
     def _request(self, method, url, body=None):
+        token = self.token_path.read_text().strip()
         request = urllib.request.Request(url, data=json.dumps(body).encode() if body else None, method=method,
-            headers={"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"})
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
         with urllib.request.urlopen(request, context=self.context, timeout=5) as response:
             return json.load(response)
 
     def _set_active_label(self, active):
+        token = self.token_path.read_text().strip()
         body = {"metadata":{"labels":{"loockit.miutaku/active":"true" if active else None}}}
         data = json.dumps(body).encode()
         request = urllib.request.Request(self.pod_url, data=data, method="PATCH",
-            headers={"Authorization": f"Bearer {self.token}", "Content-Type":"application/merge-patch+json"})
+            headers={"Authorization": f"Bearer {token}", "Content-Type":"application/merge-patch+json"})
         with urllib.request.urlopen(request, context=self.context, timeout=5): pass
 
     def _try_acquire_or_renew(self):
@@ -117,9 +122,12 @@ class KubernetesLeaseElector:
         self._activation_task = None
         try:
             await asyncio.to_thread(self._set_active_label, False)
-        finally:
-            # Disconnect and fence BLE before another local activation can run.
-            await self.on_lost()
+        except Exception:
+            # An API outage must not kill the election task.  BLE fencing is
+            # local and still has to happen; the next loop can then recover.
+            logger.exception("failed to clear BLE leader label")
+        # Disconnect and fence BLE before another local activation can run.
+        await self.on_lost()
 
     async def stop(self):
         self._stopping = True
