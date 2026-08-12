@@ -176,3 +176,58 @@ async def test_label_patch_failure_does_not_prevent_local_fencing():
     await elector._lose_leadership()
 
     assert disconnected.is_set()
+
+
+@pytest.mark.asyncio
+async def test_unhealthy_ble_is_not_added_to_service_and_requests_yield():
+    labels = []
+
+    async def activate():
+        pass
+
+    elector = KubernetesLeaseElector.__new__(KubernetesLeaseElector)
+    elector.identity = "pod-a"
+    elector.on_acquired = activate
+    elector.is_healthy = lambda: False
+    elector.is_leader = True
+    elector._stopping = False
+    elector.retry_period = 0.001
+    elector.activation_timeout = 0.005
+    elector._yield_requested = False
+    elector._serving = False
+    elector._unhealthy_since = None
+    elector._set_active_label = labels.append
+
+    await elector._activate()
+
+    assert labels == []
+    assert elector._yield_requested is True
+    assert elector._serving is False
+
+
+@pytest.mark.asyncio
+async def test_ble_becomes_service_endpoint_only_after_online():
+    labels = []
+    healthy = False
+
+    async def activate():
+        nonlocal healthy
+        healthy = True
+
+    elector = KubernetesLeaseElector.__new__(KubernetesLeaseElector)
+    elector.identity = "pod-a"
+    elector.on_acquired = activate
+    elector.is_healthy = lambda: healthy
+    elector.is_leader = True
+    elector._stopping = False
+    elector.retry_period = 0.001
+    elector.activation_timeout = 1
+    elector._yield_requested = False
+    elector._serving = False
+    elector._unhealthy_since = None
+    elector._set_active_label = labels.append
+
+    await elector._activate()
+
+    assert labels == [True]
+    assert elector._serving is True

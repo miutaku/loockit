@@ -71,6 +71,7 @@ class Application:
                 os.environ.get("POD_NAME", os.uname().nodename),
                 self._activate,
                 self._deactivate,
+                self._ble_healthy,
             )
             self._leader_task = asyncio.create_task(self._leader.run())
         else:
@@ -85,6 +86,10 @@ class Application:
         if self._active:
             self._active = False
             await self.manager.stop()
+
+    def _ble_healthy(self) -> bool:
+        states = self.manager.all_states()
+        return bool(states) and all(state.online for state in states)
 
     async def _start_history(self) -> None:
         from .history import HistoryRecorder, HistoryStore

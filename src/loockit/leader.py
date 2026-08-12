@@ -9,11 +9,20 @@ logger = logging.getLogger(__name__)
 
 
 class KubernetesLeaseElector:
-    def __init__(self, identity, on_acquired, on_lost, *, lease_name="loockit-ble-leader", duration=15, retry_period=5.0):
+    def __init__(self, identity, on_acquired, on_lost, is_healthy=None, *, lease_name="loockit-ble-leader", duration=15, retry_period=5.0,
+                 activation_timeout=90.0, unhealthy_grace=30.0, failure_cooldown=180.0):
         self.identity, self.on_acquired, self.on_lost = identity, on_acquired, on_lost
         self.lease_name, self.duration, self.retry_period = lease_name, duration, retry_period
         self.is_leader = self._stopping = False
         self._activation_task = None
+        self.is_healthy = is_healthy or (lambda: True)
+        self.activation_timeout = activation_timeout
+        self.unhealthy_grace = unhealthy_grace
+        self.failure_cooldown = failure_cooldown
+        self._yield_requested = False
+        self._cooldown_until = 0.0
+        self._serving = False
+        self._unhealthy_since = None
         host = os.environ["KUBERNETES_SERVICE_HOST"]
         port = os.environ.get("KUBERNETES_SERVICE_PORT_HTTPS", "443")
         root = Path("/var/run/secrets/kubernetes.io/serviceaccount")
@@ -30,6 +39,9 @@ class KubernetesLeaseElector:
     def _now(): return datetime.now(timezone.utc)
     @staticmethod
     def _stamp(value): return value.isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+    def _healthy(self):
+        return getattr(self, "is_healthy", lambda: True)()
 
     def _request(self, method, url, body=None):
         token = self.token_path.read_text().strip()
@@ -86,6 +98,14 @@ class KubernetesLeaseElector:
         except Exception:
             logger.exception("failed to clear stale BLE leader label")
         while not self._stopping:
+            now = asyncio.get_running_loop().time()
+            if getattr(self, "_yield_requested", False) and self.is_leader:
+                self._yield_requested = False
+                self._cooldown_until = now + getattr(self, "failure_cooldown", 180.0)
+                await self._lose_leadership()
+            if now < getattr(self, "_cooldown_until", 0.0):
+                await asyncio.sleep(self.retry_period)
+                continue
             try: leader = await asyncio.to_thread(self._try_acquire_or_renew)
             except Exception:
                 logger.exception("Kubernetes Lease operation failed"); leader = False
@@ -98,20 +118,40 @@ class KubernetesLeaseElector:
                 self._activation_task = asyncio.create_task(self._activate())
             elif not leader and self.is_leader:
                 await self._lose_leadership()
+            elif leader and getattr(self, "_serving", False):
+                if self._healthy():
+                    self._unhealthy_since = None
+                elif self._unhealthy_since is None:
+                    self._unhealthy_since = now
+                elif now - self._unhealthy_since >= getattr(self, "unhealthy_grace", 30.0):
+                    logger.warning("BLE leader %s became unhealthy; yielding", self.identity)
+                    self._yield_requested = True
             await asyncio.sleep(self.retry_period)
 
     async def _activate(self):
         try:
             await self.on_acquired()
+            deadline = asyncio.get_running_loop().time() + getattr(self, "activation_timeout", 90.0)
+            while self.is_leader and not self._stopping and not self._healthy():
+                if asyncio.get_running_loop().time() >= deadline:
+                    logger.warning("BLE did not become healthy on %s; yielding leadership", self.identity)
+                    self._yield_requested = True
+                    return
+                await asyncio.sleep(self.retry_period)
             if self.is_leader and not self._stopping:
                 await asyncio.to_thread(self._set_active_label, True)
+                self._serving = True
+                self._unhealthy_since = None
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("failed to activate BLE leader")
+            self._yield_requested = True
 
     async def _lose_leadership(self):
         self.is_leader = False
+        self._serving = False
+        self._unhealthy_since = None
         logger.warning("lost BLE leadership as %s", self.identity)
         if self._activation_task is not None and not self._activation_task.done():
             self._activation_task.cancel()
