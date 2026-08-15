@@ -206,6 +206,86 @@ async def test_unhealthy_ble_is_not_added_to_service_and_requests_yield():
 
 
 @pytest.mark.asyncio
+async def test_ambiguous_lease_failure_does_not_lose_leadership():
+    disconnected = asyncio.Event()
+
+    async def deactivate():
+        disconnected.set()
+
+    elector = KubernetesLeaseElector.__new__(KubernetesLeaseElector)
+    elector.identity = "pod-a"
+    elector.on_lost = deactivate
+    elector.retry_period = 0.01
+    elector.is_leader = True
+    elector._stopping = False
+    elector._activation_task = None
+    elector._yield_requested = False
+    elector._cooldown_until = 0.0
+    elector._set_active_label = lambda active: None
+
+    def raise_timeout():
+        raise TimeoutError("timed out")
+
+    elector._try_acquire_or_renew = raise_timeout
+
+    run_task = asyncio.create_task(elector.run())
+    await asyncio.sleep(0.05)
+    elector._stopping = True
+    await asyncio.wait_for(run_task, timeout=1)
+
+    assert elector.is_leader is True
+    assert not disconnected.is_set()
+
+
+def test_set_active_label_retries_transient_failures(tmp_path, monkeypatch):
+    token_path = tmp_path / "token"
+    token_path.write_text("secret")
+    attempts = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    def urlopen(request, **kwargs):
+        attempts.append(request)
+        if len(attempts) < 3:
+            raise TimeoutError("timed out")
+        return Response()
+
+    elector = KubernetesLeaseElector.__new__(KubernetesLeaseElector)
+    elector.identity = "pod-a"
+    elector.pod_url = "https://kubernetes.invalid/api/v1/namespaces/ns/pods/pod-a"
+    elector.token_path = token_path
+    elector.context = None
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+
+    elector._set_active_label(True, attempts=3, backoff=0.001)
+
+    assert len(attempts) == 3
+
+
+def test_set_active_label_raises_after_exhausting_retries(tmp_path, monkeypatch):
+    token_path = tmp_path / "token"
+    token_path.write_text("secret")
+
+    def urlopen(request, **kwargs):
+        raise TimeoutError("timed out")
+
+    elector = KubernetesLeaseElector.__new__(KubernetesLeaseElector)
+    elector.identity = "pod-a"
+    elector.pod_url = "https://kubernetes.invalid/api/v1/namespaces/ns/pods/pod-a"
+    elector.token_path = token_path
+    elector.context = None
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+
+    with pytest.raises(TimeoutError):
+        elector._set_active_label(True, attempts=2, backoff=0.001)
+
+
+@pytest.mark.asyncio
 async def test_ble_becomes_service_endpoint_only_after_online():
     labels = []
     healthy = False

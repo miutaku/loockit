@@ -1,7 +1,7 @@
 """Kubernetes Lease election used to fence the single BLE connection."""
 from __future__ import annotations
 
-import asyncio, json, logging, os, ssl, urllib.error, urllib.request
+import asyncio, json, logging, os, ssl, time, urllib.error, urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -50,13 +50,23 @@ class KubernetesLeaseElector:
         with urllib.request.urlopen(request, context=self.context, timeout=5) as response:
             return json.load(response)
 
-    def _set_active_label(self, active):
-        token = self.token_path.read_text().strip()
+    def _set_active_label(self, active, attempts=3, backoff=1.0):
+        # Retry: nothing else revisits this label if a single patch fails transiently.
         body = {"metadata":{"labels":{"loockit.miutaku/active":"true" if active else None}}}
         data = json.dumps(body).encode()
-        request = urllib.request.Request(self.pod_url, data=data, method="PATCH",
-            headers={"Authorization": f"Bearer {token}", "Content-Type":"application/merge-patch+json"})
-        with urllib.request.urlopen(request, context=self.context, timeout=5): pass
+        last_exc = None
+        for attempt in range(attempts):
+            try:
+                token = self.token_path.read_text().strip()
+                request = urllib.request.Request(self.pod_url, data=data, method="PATCH",
+                    headers={"Authorization": f"Bearer {token}", "Content-Type":"application/merge-patch+json"})
+                with urllib.request.urlopen(request, context=self.context, timeout=5): pass
+                return
+            except Exception as exc:
+                last_exc = exc
+                if attempt < attempts - 1:
+                    time.sleep(backoff * (attempt + 1))
+        raise last_exc
 
     def _try_acquire_or_renew(self):
         now = self._now()
@@ -106,9 +116,14 @@ class KubernetesLeaseElector:
             if now < getattr(self, "_cooldown_until", 0.0):
                 await asyncio.sleep(self.retry_period)
                 continue
-            try: leader = await asyncio.to_thread(self._try_acquire_or_renew)
+            try:
+                leader = await asyncio.to_thread(self._try_acquire_or_renew)
             except Exception:
-                logger.exception("Kubernetes Lease operation failed"); leader = False
+                # Outcome unknown (e.g. timeout) -- the PUT may have committed
+                # server-side. Don't treat as a confirmed loss; retry instead.
+                logger.exception("Kubernetes Lease operation failed; leadership state left unchanged")
+                await asyncio.sleep(self.retry_period)
+                continue
             if leader and not self.is_leader:
                 # Do not await BLE discovery/login here.  A scan can take at
                 # least as long as the Lease duration; blocking this loop would
