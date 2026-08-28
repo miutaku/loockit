@@ -39,6 +39,10 @@ base_topic = "loockit"
 enabled = false
 path = "loockit-history.sqlite3"
 
+[ble]
+# Allow enough time to receive intermittent advertisements from distant devices.
+scan_duration_seconds = 30
+
 # CANDY HOUSE Web API v4 fallback. Off by default; the core never relies on it.
 cloud_fallback = false
 

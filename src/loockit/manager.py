@@ -76,7 +76,9 @@ class DeviceManager:
             return FakeController(dev)
         from .controller.ble import BleController
 
-        return BleController(dev)
+        return BleController(
+            dev, scan_duration=self._config.ble.scan_duration_seconds
+        )
 
     def _make_cloud(self, dev: DeviceConfig) -> Optional[DeviceController]:
         if self._simulate or not self._config.cloud_fallback or dev.cloud is None:

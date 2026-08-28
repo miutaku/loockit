@@ -90,16 +90,10 @@ async def test_reconnect_closes_previous_session(monkeypatch):
     old_device = FakeDevice(FakeStatus("NoBleSignal", "UnLogin"))
     controller._device = old_device
 
-    class Manager:
-        @staticmethod
-        async def scan_by_address(**_kwargs):
-            raise ConnectionError("advertisement missed")
+    async def scan_by_address(*_args):
+        raise ConnectionError("advertisement missed")
 
-    monkeypatch.setitem(
-        __import__("sys").modules,
-        "pysesameos2.ble",
-        type("BleModule", (), {"CHBleManager": Manager}),
-    )
+    monkeypatch.setattr(ble, "_scan_by_address", scan_by_address)
     monkeypatch.setitem(
         __import__("sys").modules,
         "pysesameos2.device",
@@ -111,3 +105,37 @@ async def test_reconnect_closes_previous_session(monkeypatch):
 
     assert old_device.disconnected is True
     assert controller._device is None
+
+
+async def test_scan_uses_configured_duration(monkeypatch):
+    discovered = type("BLEDevice", (), {"address": "00:11:22:33:44:55"})()
+    calls = []
+
+    class Scanner:
+        @staticmethod
+        async def discover(*, timeout):
+            calls.append(timeout)
+            return [discovered]
+
+    expected = object()
+
+    class Manager:
+        def device_factory(self, device):
+            assert device is discovered
+            return expected
+
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "bleak",
+        type("BleakModule", (), {"BleakScanner": Scanner}),
+    )
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "pysesameos2.ble",
+        type("BleModule", (), {"CHBleManager": Manager}),
+    )
+
+    result = await ble._scan_by_address("00:11:22:33:44:55", 30)
+
+    assert result is expected
+    assert calls == [30]

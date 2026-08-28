@@ -110,6 +110,13 @@ class HistoryConfig:
 
 
 @dataclass
+class BleConfig:
+    """Bluetooth discovery settings."""
+
+    scan_duration_seconds: int = 30
+
+
+@dataclass
 class AppConfig:
     devices: list[DeviceConfig] = field(default_factory=list)
     grpc: GrpcConfig = field(default_factory=GrpcConfig)
@@ -117,6 +124,7 @@ class AppConfig:
     rest: RestConfig = field(default_factory=RestConfig)
     mqtt: MqttConfig = field(default_factory=MqttConfig)
     history: HistoryConfig = field(default_factory=HistoryConfig)
+    ble: BleConfig = field(default_factory=BleConfig)
     cloud_fallback: bool = False
 
     def device(self, device_id: str) -> DeviceConfig:
@@ -249,6 +257,12 @@ def load_config(path: str | os.PathLike, env: Optional[dict] = None) -> AppConfi
         path=str(history_raw.get("path", "loockit-history.sqlite3")),
     )
 
+    ble_raw = raw.get("ble", {})
+    scan_duration_seconds = int(ble_raw.get("scan_duration_seconds", 30))
+    if scan_duration_seconds <= 0:
+        raise ConfigError("ble.scan_duration_seconds must be greater than zero")
+    ble = BleConfig(scan_duration_seconds=scan_duration_seconds)
+
     cloud_fallback = bool(raw.get("cloud_fallback", False))
 
     return AppConfig(
@@ -258,5 +272,6 @@ def load_config(path: str | os.PathLike, env: Optional[dict] = None) -> AppConfi
         rest=rest,
         mqtt=mqtt,
         history=history,
+        ble=ble,
         cloud_fallback=cloud_fallback,
     )

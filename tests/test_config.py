@@ -31,6 +31,7 @@ def test_load_minimal(tmp_path):
     )
     cfg = load_config(p, env={})
     assert cfg.grpc.port == 50051
+    assert cfg.ble.scan_duration_seconds == 30
     assert cfg.cloud_fallback is False
     assert [d.id for d in cfg.devices] == ["front-door", "desk-bot"]
     assert cfg.device("front-door").model is DeviceModel.SESAME4
@@ -117,6 +118,39 @@ def test_unknown_model_rejected(tmp_path):
 def test_missing_devices_rejected(tmp_path):
     p = _write(tmp_path, "[grpc]\nport = 1\n")
     with pytest.raises(ConfigError, match="at least one"):
+        load_config(p, env={})
+
+
+def test_ble_scan_duration(tmp_path):
+    p = _write(
+        tmp_path,
+        """
+        [ble]
+        scan_duration_seconds = 45
+
+        [[devices]]
+        id = "d"
+        model = "SESAME4"
+        ble_address = "x"
+        """,
+    )
+    assert load_config(p, env={}).ble.scan_duration_seconds == 45
+
+
+def test_ble_scan_duration_must_be_positive(tmp_path):
+    p = _write(
+        tmp_path,
+        """
+        [ble]
+        scan_duration_seconds = 0
+
+        [[devices]]
+        id = "d"
+        model = "SESAME4"
+        ble_address = "x"
+        """,
+    )
+    with pytest.raises(ConfigError, match="greater than zero"):
         load_config(p, env={})
 
 

@@ -33,6 +33,27 @@ _RECONNECT_BASE = 2.0
 _RECONNECT_MAX = 60.0
 
 
+async def _scan_by_address(ble_address: str, scan_duration: int):
+    """Discover one SESAME while honoring the configured scan duration."""
+    from bleak import BleakScanner
+    from pysesameos2.ble import CHBleManager
+
+    devices = await BleakScanner.discover(timeout=scan_duration)
+    discovered = next(
+        (device for device in devices if device.address.lower() == ble_address.lower()),
+        None,
+    )
+    if discovered is None:
+        raise ConnectionRefusedError("Scan completed: the device not found")
+
+    try:
+        return CHBleManager().device_factory(discovered)
+    except NotImplementedError:
+        raise NotImplementedError("This device is not supported.") from None
+    except ValueError:
+        raise ValueError("This is not a SESAME device.") from None
+
+
 class BleController(DeviceController):
     """Drives one SESAME device over BLE via SesameOS2."""
 
@@ -69,7 +90,6 @@ class BleController(DeviceController):
             raise
 
     async def _open_session(self) -> None:
-        from pysesameos2.ble import CHBleManager
         from pysesameos2.device import CHDeviceKey
 
         async with self._session_lock:
@@ -80,9 +100,9 @@ class BleController(DeviceController):
                 logger.info(
                     "scanning for %s (%s)", self.config.id, self.config.ble_address
                 )
-                device = await CHBleManager().scan_by_address(
-                    ble_device_identifier=self.config.ble_address,
-                    scan_duration=self._scan_duration,
+                device = await _scan_by_address(
+                    self.config.ble_address,
+                    self._scan_duration,
                 )
 
                 key = CHDeviceKey()
