@@ -23,6 +23,10 @@ class KubernetesLeaseElector:
         self._cooldown_until = 0.0
         self._serving = False
         self._unhealthy_since = None
+        # Monotonic time of the last *confirmed* acquire/renew. An API timeout
+        # has an ambiguous server-side outcome, but we must fence BLE before
+        # the last confirmed Lease can expire and another Pod can acquire it.
+        self._last_confirmed_lease = None
         host = os.environ["KUBERNETES_SERVICE_HOST"]
         port = os.environ.get("KUBERNETES_SERVICE_PORT_HTTPS", "443")
         root = Path("/var/run/secrets/kubernetes.io/serviceaccount")
@@ -119,11 +123,22 @@ class KubernetesLeaseElector:
             try:
                 leader = await asyncio.to_thread(self._try_acquire_or_renew)
             except Exception:
-                # Outcome unknown (e.g. timeout) -- the PUT may have committed
-                # server-side. Don't treat as a confirmed loss; retry instead.
                 logger.exception("Kubernetes Lease operation failed; leadership state left unchanged")
+                last_confirmed = getattr(self, "_last_confirmed_lease", None)
+                if (
+                    self.is_leader
+                    and last_confirmed is not None
+                    and now - last_confirmed >= self.duration
+                ):
+                    logger.error(
+                        "no confirmed Lease renewal for %.1fs; fencing BLE leadership",
+                        now - last_confirmed,
+                    )
+                    await self._lose_leadership()
                 await asyncio.sleep(self.retry_period)
                 continue
+            if leader:
+                self._last_confirmed_lease = now
             if leader and not self.is_leader:
                 # Do not await BLE discovery/login here.  A scan can take at
                 # least as long as the Lease duration; blocking this loop would
@@ -165,6 +180,7 @@ class KubernetesLeaseElector:
 
     async def _lose_leadership(self):
         self.is_leader = False
+        self._last_confirmed_lease = None
         self._serving = False
         self._unhealthy_since = None
         logger.warning("lost BLE leadership as %s", self.identity)

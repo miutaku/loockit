@@ -206,7 +206,7 @@ async def test_unhealthy_ble_is_not_added_to_service_and_requests_yield():
 
 
 @pytest.mark.asyncio
-async def test_ambiguous_lease_failure_does_not_lose_leadership():
+async def test_ambiguous_lease_failure_keeps_leadership_before_lease_deadline():
     disconnected = asyncio.Event()
 
     async def deactivate():
@@ -216,11 +216,13 @@ async def test_ambiguous_lease_failure_does_not_lose_leadership():
     elector.identity = "pod-a"
     elector.on_lost = deactivate
     elector.retry_period = 0.01
+    elector.duration = 1
     elector.is_leader = True
     elector._stopping = False
     elector._activation_task = None
     elector._yield_requested = False
     elector._cooldown_until = 0.0
+    elector._last_confirmed_lease = asyncio.get_running_loop().time()
     elector._set_active_label = lambda active: None
 
     def raise_timeout():
@@ -235,6 +237,39 @@ async def test_ambiguous_lease_failure_does_not_lose_leadership():
 
     assert elector.is_leader is True
     assert not disconnected.is_set()
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_lease_failure_fences_ble_after_lease_deadline():
+    disconnected = asyncio.Event()
+
+    async def deactivate():
+        disconnected.set()
+
+    elector = KubernetesLeaseElector.__new__(KubernetesLeaseElector)
+    elector.identity = "pod-a"
+    elector.on_lost = deactivate
+    elector.retry_period = 0.001
+    elector.duration = 0.01
+    elector.is_leader = True
+    elector._stopping = False
+    elector._activation_task = None
+    elector._yield_requested = False
+    elector._cooldown_until = 0.0
+    elector._last_confirmed_lease = asyncio.get_running_loop().time()
+    elector._set_active_label = lambda active: None
+
+    def raise_timeout():
+        raise TimeoutError("timed out")
+
+    elector._try_acquire_or_renew = raise_timeout
+
+    run_task = asyncio.create_task(elector.run())
+    await asyncio.wait_for(disconnected.wait(), timeout=1)
+    elector._stopping = True
+    await asyncio.wait_for(run_task, timeout=1)
+
+    assert elector.is_leader is False
 
 
 def test_set_active_label_retries_transient_failures(tmp_path, monkeypatch):
