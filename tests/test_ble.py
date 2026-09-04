@@ -107,6 +107,76 @@ async def test_reconnect_closes_previous_session(monkeypatch):
     assert controller._device is None
 
 
+async def test_disconnect_force_closes_connected_underlying_client():
+    controller = BleController(
+        DeviceConfig(
+            id="intercom-bot",
+            model=DeviceModel.SESAME_BOT1,
+            ble_address="00:11:22:33:44:55",
+            secret_key="secret",
+            public_key="public",
+        )
+    )
+
+    class Client:
+        def __init__(self):
+            self.is_connected = True
+            self.disconnect_calls = 0
+
+        async def disconnect(self):
+            self.disconnect_calls += 1
+            self.is_connected = False
+
+    class Device:
+        def __init__(self):
+            self._client = Client()
+            self.disconnect_calls = 0
+
+        async def disconnect(self):
+            # Simulate pysesameos2 swallowing a stop_notify failure before it
+            # reaches its own BleakClient.disconnect() call.
+            self.disconnect_calls += 1
+
+    device = Device()
+    await controller._disconnect_device(device)
+
+    assert device.disconnect_calls == 1
+    assert device._client.disconnect_calls == 1
+    assert device._client.is_connected is False
+
+
+async def test_disconnect_does_not_double_close_disconnected_client():
+    controller = BleController(
+        DeviceConfig(
+            id="intercom-bot",
+            model=DeviceModel.SESAME_BOT1,
+            ble_address="00:11:22:33:44:55",
+            secret_key="secret",
+            public_key="public",
+        )
+    )
+
+    class Client:
+        is_connected = True
+        disconnect_calls = 0
+
+        async def disconnect(self):
+            self.disconnect_calls += 1
+            self.is_connected = False
+
+    class Device:
+        def __init__(self):
+            self._client = Client()
+
+        async def disconnect(self):
+            await self._client.disconnect()
+
+    device = Device()
+    await controller._disconnect_device(device)
+
+    assert device._client.disconnect_calls == 1
+
+
 async def test_scan_uses_configured_duration(monkeypatch):
     discovered = type("BLEDevice", (), {"address": "00:11:22:33:44:55"})()
     calls = []

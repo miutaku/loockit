@@ -132,14 +132,27 @@ class BleController(DeviceController):
 
     async def _disconnect_device(self, device) -> None:
         disconnect = getattr(device, "disconnect", None)
-        if disconnect is None:
+        if disconnect is not None:
+            try:
+                result = disconnect()
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception:  # pragma: no cover - best-effort teardown
+                logger.debug("error during disconnect", exc_info=True)
+
+        # pysesameos2 stops notifications before disconnecting the BleakClient,
+        # but catches the exception if stop_notify fails and then skips the
+        # actual disconnect.  Force-close such a leftover connection so it
+        # cannot block this replica (or the next leader) from reconnecting.
+        client = getattr(device, "_client", None)
+        if client is None or not getattr(client, "is_connected", False):
             return
         try:
-            result = disconnect()
+            result = client.disconnect()
             if asyncio.iscoroutine(result):
                 await result
         except Exception:  # pragma: no cover - best-effort teardown
-            logger.debug("error during disconnect", exc_info=True)
+            logger.debug("error during forced BLE client disconnect", exc_info=True)
 
     async def _close_current_device(self) -> None:
         device = self._device
