@@ -57,13 +57,23 @@ async def _scan_by_address(ble_address: str, scan_duration: int):
 class BleController(DeviceController):
     """Drives one SESAME device over BLE via SesameOS2."""
 
-    def __init__(self, config: DeviceConfig, *, scan_duration: int = 15) -> None:
+    def __init__(
+        self,
+        config: DeviceConfig,
+        *,
+        scan_duration: int = 15,
+        operation_lock: asyncio.Lock | None = None,
+    ) -> None:
         super().__init__(config)
         self._scan_duration = scan_duration
         self._device = None  # pysesameos2 CHSesame2 | CHSesameBot
         self._loop: asyncio.AbstractEventLoop | None = None
         self._reconnect_task: asyncio.Task | None = None
         self._session_lock = asyncio.Lock()
+        # BlueZ supports multiple established GATT links, but concurrent
+        # discovery/connect attempts on one adapter are unreliable. Managers
+        # with multiple devices provide one shared lock for these operations.
+        self._operation_lock = operation_lock or asyncio.Lock()
         self._connecting = False
         self._closing = False
         self._state = DeviceState(
@@ -92,7 +102,7 @@ class BleController(DeviceController):
     async def _open_session(self) -> None:
         from pysesameos2.device import CHDeviceKey
 
-        async with self._session_lock:
+        async with self._operation_lock, self._session_lock:
             self._connecting = True
             device = None
             try:

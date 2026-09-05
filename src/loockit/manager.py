@@ -59,6 +59,7 @@ class DeviceManager:
         self._subscribers: set[asyncio.Queue[DeviceState]] = set()
         self._command_listeners: list[CommandListener] = []
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._ble_operation_lock = asyncio.Lock()
         self._build_entries()
 
     def _build_entries(self) -> None:
@@ -77,7 +78,9 @@ class DeviceManager:
         from .controller.ble import BleController
 
         return BleController(
-            dev, scan_duration=self._config.ble.scan_duration_seconds
+            dev,
+            scan_duration=self._config.ble.scan_duration_seconds,
+            operation_lock=self._ble_operation_lock,
         )
 
     def _make_cloud(self, dev: DeviceConfig) -> Optional[DeviceController]:

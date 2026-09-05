@@ -89,7 +89,10 @@ class Application:
 
     def _ble_healthy(self) -> bool:
         states = self.manager.all_states()
-        return bool(states) and all(state.online for state in states)
+        # Keep the API available when at least one independently reconnecting
+        # BLE device is online. A weak peripheral must not make healthy devices
+        # disappear behind an empty Kubernetes Service endpoint.
+        return any(state.online for state in states)
 
     async def _start_history(self) -> None:
         from .history import HistoryRecorder, HistoryStore

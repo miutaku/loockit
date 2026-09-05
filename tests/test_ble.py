@@ -177,6 +177,29 @@ async def test_disconnect_does_not_double_close_disconnected_client():
     assert device._client.disconnect_calls == 1
 
 
+async def test_controllers_can_share_adapter_operation_lock():
+    operation_lock = asyncio.Lock()
+    first = BleController(
+        DeviceConfig(
+            id="first",
+            model=DeviceModel.SESAME_BOT1,
+            ble_address="00:11:22:33:44:55",
+        ),
+        operation_lock=operation_lock,
+    )
+    second = BleController(
+        DeviceConfig(
+            id="second",
+            model=DeviceModel.SESAME4,
+            ble_address="00:11:22:33:44:66",
+        ),
+        operation_lock=operation_lock,
+    )
+
+    assert first._operation_lock is operation_lock
+    assert second._operation_lock is operation_lock
+
+
 async def test_scan_uses_configured_duration(monkeypatch):
     discovered = type("BLEDevice", (), {"address": "00:11:22:33:44:55"})()
     calls = []
