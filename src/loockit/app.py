@@ -72,6 +72,9 @@ class Application:
                 self._activate,
                 self._deactivate,
                 self._ble_healthy,
+                label_active_pod=os.environ.get(
+                    "LOOCKIT_LEADER_LABEL_POD", "true"
+                ).lower() == "true",
             )
             self._leader_task = asyncio.create_task(self._leader.run())
         else:

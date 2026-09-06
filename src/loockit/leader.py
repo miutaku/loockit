@@ -10,7 +10,8 @@ logger = logging.getLogger(__name__)
 
 class KubernetesLeaseElector:
     def __init__(self, identity, on_acquired, on_lost, is_healthy=None, *, lease_name="loockit-ble-leader", duration=15, retry_period=5.0,
-                 activation_timeout=90.0, unhealthy_grace=30.0, failure_cooldown=180.0):
+                 activation_timeout=90.0, unhealthy_grace=30.0, failure_cooldown=180.0,
+                 label_active_pod=True):
         self.identity, self.on_acquired, self.on_lost = identity, on_acquired, on_lost
         self.lease_name, self.duration, self.retry_period = lease_name, duration, retry_period
         self.is_leader = self._stopping = False
@@ -32,7 +33,10 @@ class KubernetesLeaseElector:
         root = Path("/var/run/secrets/kubernetes.io/serviceaccount")
         namespace = (root / "namespace").read_text().strip()
         self.url = f"https://{host}:{port}/apis/coordination.k8s.io/v1/namespaces/{namespace}/leases/{lease_name}"
-        self.pod_url = f"https://{host}:{port}/api/v1/namespaces/{namespace}/pods/{identity}"
+        self.pod_url = (
+            f"https://{host}:{port}/api/v1/namespaces/{namespace}/pods/{identity}"
+            if label_active_pod else None
+        )
         # Projected ServiceAccount tokens are rotated by kubelet.  Keep the
         # path and read it for every request instead of caching an eventually
         # expired token for the lifetime of the process.
@@ -55,6 +59,10 @@ class KubernetesLeaseElector:
             return json.load(response)
 
     def _set_active_label(self, active, attempts=3, backoff=1.0):
+        # External runtimes (for example, one LXC per Bluetooth controller)
+        # participate in the same Lease but have no Kubernetes Pod to label.
+        if self.pod_url is None:
+            return
         # Retry: nothing else revisits this label if a single patch fails transiently.
         body = {"metadata":{"labels":{"loockit.miutaku/active":"true" if active else None}}}
         data = json.dumps(body).encode()

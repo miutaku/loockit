@@ -5,6 +5,16 @@ import pytest
 from loockit.leader import KubernetesLeaseElector
 
 
+def test_external_elector_skips_pod_label_update():
+    elector = KubernetesLeaseElector.__new__(KubernetesLeaseElector)
+    elector.pod_url = None
+
+    # No Kubernetes request is attempted for an external runtime identity.
+    elector._request = lambda *args, **kwargs: pytest.fail("unexpected request")
+    assert elector._set_active_label(True) is None
+    assert elector._set_active_label(False) is None
+
+
 def test_kubernetes_token_is_reloaded_for_each_request(tmp_path, monkeypatch):
     token_path = tmp_path / "token"
     token_path.write_text("first")
