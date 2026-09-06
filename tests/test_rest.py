@@ -114,7 +114,7 @@ def test_standby_is_healthy_but_rejects_commands(config):
     app = create_app(mgr, manage_lifecycle=True, is_active=lambda: False)
     with TestClient(app) as standby:
         assert standby.get("/healthz").status_code == 200
-        assert standby.get("/readyz").status_code == 200
+        assert standby.get("/readyz").status_code == 503
         response = standby.post("/devices/desk-bot/click")
         assert response.status_code == 503
         assert response.json()["detail"] == "standby replica"
