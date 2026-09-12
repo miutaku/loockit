@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import sys
 
 from .app import Application
@@ -69,9 +70,19 @@ def _configure_logging(verbosity: int) -> None:
         level = logging.INFO
     elif verbosity >= 2:
         level = logging.DEBUG
+    configured_level = os.environ.get("LOOCKIT_LOG_LEVEL")
+    if configured_level:
+        normalized = configured_level.strip().upper()
+        if normalized not in {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}:
+            raise ValueError(
+                "LOOCKIT_LOG_LEVEL must be one of "
+                "CRITICAL, ERROR, WARNING, INFO, or DEBUG"
+            )
+        level = getattr(logging, normalized)
     logging.basicConfig(
         level=level,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        force=True,
     )
 
 
@@ -98,7 +109,11 @@ def _run_scan(duration: int) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
-    _configure_logging(args.verbose)
+    try:
+        _configure_logging(args.verbose)
+    except ValueError as exc:
+        print(f"logging configuration error: {exc}", file=sys.stderr)
+        return 2
 
     if args.command == "scan":
         return _run_scan(args.duration)

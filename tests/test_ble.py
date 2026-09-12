@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 import pytest
 
@@ -232,3 +233,59 @@ async def test_scan_uses_configured_duration(monkeypatch):
 
     assert result is expected
     assert calls == [30]
+
+
+async def test_connection_observability_records_phase_and_elapsed_time(
+    monkeypatch, caplog
+):
+    controller = BleController(
+        DeviceConfig(
+            id="intercom-bot",
+            model=DeviceModel.SESAME_BOT1,
+            ble_address="00:11:22:33:44:55",
+            secret_key="secret",
+            public_key="public",
+        )
+    )
+
+    class DeviceKey:
+        def setSecretKey(self, _value):
+            pass
+
+        def setSesame2PublicKey(self, _value):
+            pass
+
+    class Device(FakeDevice):
+        def setKey(self, _key):
+            pass
+
+        def setDeviceStatusCallback(self, _callback):
+            pass
+
+        async def connect(self):
+            pass
+
+        async def wait_for_login(self):
+            pass
+
+    device = Device(FakeStatus("Unlocked", "Login"))
+
+    async def scan_by_address(*_args):
+        return device
+
+    monkeypatch.setattr(ble, "_scan_by_address", scan_by_address)
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "pysesameos2.device",
+        type("DeviceModule", (), {"CHDeviceKey": DeviceKey}),
+    )
+    caplog.set_level(logging.INFO, logger="loockit.controller.ble")
+
+    await controller._open_session()
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("attempt started device=intercom-bot attempt=1" in m for m in messages)
+    assert any("phase=scan elapsed_seconds=" in m for m in messages)
+    assert any("phase=gatt_connect elapsed_seconds=" in m for m in messages)
+    assert any("phase=login_wait elapsed_seconds=" in m for m in messages)
+    assert any("attempt completed device=intercom-bot attempt=1" in m for m in messages)

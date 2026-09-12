@@ -76,6 +76,7 @@ class BleController(DeviceController):
         self._operation_lock = operation_lock or asyncio.Lock()
         self._connecting = False
         self._closing = False
+        self._attempt_sequence = 0
         self._state = DeviceState(
             device_id=config.id,
             model=config.model,
@@ -104,15 +105,36 @@ class BleController(DeviceController):
 
         async with self._operation_lock, self._session_lock:
             self._connecting = True
+            self._attempt_sequence += 1
+            attempt = self._attempt_sequence
+            started = asyncio.get_running_loop().time()
+            phase = "cleanup"
             device = None
             try:
-                await self._close_current_device()
                 logger.info(
-                    "scanning for %s (%s)", self.config.id, self.config.ble_address
+                    "BLE connection attempt started device=%s attempt=%d",
+                    self.config.id,
+                    attempt,
+                )
+                await self._close_current_device()
+                phase = "scan"
+                logger.info(
+                    "BLE connection phase started device=%s attempt=%d phase=%s",
+                    self.config.id,
+                    attempt,
+                    phase,
                 )
                 device = await _scan_by_address(
                     self.config.ble_address,
                     self._scan_duration,
+                )
+                logger.info(
+                    "BLE connection phase completed device=%s attempt=%d "
+                    "phase=%s elapsed_seconds=%.3f",
+                    self.config.id,
+                    attempt,
+                    phase,
+                    asyncio.get_running_loop().time() - started,
                 )
 
                 key = CHDeviceKey()
@@ -121,16 +143,74 @@ class BleController(DeviceController):
                 device.setKey(key)
                 device.setDeviceStatusCallback(self._on_device_state)
 
+                phase = "gatt_connect"
+                logger.info(
+                    "BLE connection phase started device=%s attempt=%d phase=%s",
+                    self.config.id,
+                    attempt,
+                    phase,
+                )
                 await device.connect()
+                logger.info(
+                    "BLE connection phase completed device=%s attempt=%d "
+                    "phase=%s elapsed_seconds=%.3f",
+                    self.config.id,
+                    attempt,
+                    phase,
+                    asyncio.get_running_loop().time() - started,
+                )
+                phase = "login_wait"
+                logger.info(
+                    "BLE connection phase started device=%s attempt=%d phase=%s",
+                    self.config.id,
+                    attempt,
+                    phase,
+                )
                 await device.wait_for_login()
+                logger.info(
+                    "BLE connection phase completed device=%s attempt=%d "
+                    "phase=%s elapsed_seconds=%.3f",
+                    self.config.id,
+                    attempt,
+                    phase,
+                    asyncio.get_running_loop().time() - started,
+                )
                 self._device = device
-                logger.info("%s logged in", self.config.id)
+                logger.info(
+                    "BLE connection attempt completed device=%s attempt=%d "
+                    "elapsed_seconds=%.3f",
+                    self.config.id,
+                    attempt,
+                    asyncio.get_running_loop().time() - started,
+                )
                 # wait_for_login is authoritative even if the library's last
                 # transient status is Busy (which it classifies as UnLogin).
                 state = self._translate(device).evolve(online=True)
                 self._state = state
                 self._emit(state)
-            except BaseException:
+            except asyncio.CancelledError:
+                logger.info(
+                    "BLE connection attempt cancelled device=%s attempt=%d "
+                    "phase=%s elapsed_seconds=%.3f",
+                    self.config.id,
+                    attempt,
+                    phase,
+                    asyncio.get_running_loop().time() - started,
+                )
+                if device is not None and device is not self._device:
+                    await self._disconnect_device(device)
+                raise
+            except BaseException as exc:
+                logger.warning(
+                    "BLE connection attempt failed device=%s attempt=%d "
+                    "phase=%s elapsed_seconds=%.3f error_type=%s error=%s",
+                    self.config.id,
+                    attempt,
+                    phase,
+                    asyncio.get_running_loop().time() - started,
+                    type(exc).__name__,
+                    exc,
+                )
                 # Cancellation is expected when leadership is lost while a
                 # scan/login is in progress.  Always close the partially-open
                 # GATT session so the next leader can connect cleanly.

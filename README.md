@@ -90,6 +90,18 @@ loockit run --simulate --config config.toml -v
 loockit run --config config.toml --enable-matter -v
 ```
 
+ログレベルは `LOOCKIT_LOG_LEVEL` でも指定できます。指定可能な値は
+`CRITICAL`、`ERROR`、`WARNING`、`INFO`、`DEBUG` で、環境変数は
+`-v` / `-vv` より優先されます。どちらも指定しない場合は `WARNING` です。
+
+```bash
+LOOCKIT_LOG_LEVEL=INFO loockit run --config config.toml
+```
+
+`INFO` はBLEのscan、GATT接続、ログイン待機について、開始・完了・失敗と
+経過秒数を接続試行時だけ記録します。定常状態で周期的なログは出しません。
+`DEBUG` は一時的な詳細調査向けです。
+
 ## Raspberry Pi での実機テスト
 
 Raspberry Pi 4B+（内蔵 BLE）での手順。OS は Raspberry Pi OS Bookworm（64bit, Python 3.11+）を想定。
