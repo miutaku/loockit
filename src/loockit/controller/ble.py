@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 
 from ..config import DeviceConfig
 from ..models import (
@@ -36,13 +37,37 @@ _LOGIN_TIMEOUT = 15.0
 _DISCONNECT_TIMEOUT = 5.0
 
 
+async def _bluez_adapter() -> str:
+    """Resolve the powered adapter on every scan, including after USB resets."""
+    from dbus_next.aio import MessageBus
+    from dbus_next.constants import BusType, MessageType
+    from dbus_next.message import Message
+
+    bus = await asyncio.wait_for(MessageBus(bus_type=BusType.SYSTEM).connect(), 5)
+    try:
+        reply = await asyncio.wait_for(bus.call(Message(
+            destination="org.bluez", path="/",
+            interface="org.freedesktop.DBus.ObjectManager", member="GetManagedObjects",
+        )), 5)
+        if reply.message_type == MessageType.ERROR:
+            raise ConnectionError(f"BlueZ adapter lookup failed: {reply.error_name}")
+        for path, interfaces in sorted(reply.body[0].items()):
+            adapter = interfaces.get("org.bluez.Adapter1", {})
+            if adapter.get("Powered") and adapter["Powered"].value:
+                return path.rsplit("/", 1)[1]
+        raise ConnectionError("No powered Bluetooth adapter available")
+    finally:
+        bus.disconnect()
+
+
 async def _scan_by_address(ble_address: str, scan_duration: int):
     """Discover one SESAME while honoring the configured scan duration."""
     from bleak import BleakScanner
     from pysesameos2.ble import CHBleManager
 
+    options = {"adapter": await _bluez_adapter()} if sys.platform == "linux" else {}
     devices = await asyncio.wait_for(
-        BleakScanner.discover(timeout=scan_duration), timeout=scan_duration + 10
+        BleakScanner.discover(timeout=scan_duration, **options), timeout=scan_duration + 10
     )
     discovered = next(
         (device for device in devices if device.address.lower() == ble_address.lower()),

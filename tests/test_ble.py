@@ -207,7 +207,8 @@ async def test_scan_uses_configured_duration(monkeypatch):
 
     class Scanner:
         @staticmethod
-        async def discover(*, timeout):
+        async def discover(*, timeout, adapter):
+            assert adapter == "hci1"
             calls.append(timeout)
             return [discovered]
 
@@ -229,6 +230,8 @@ async def test_scan_uses_configured_duration(monkeypatch):
         type("BleModule", (), {"CHBleManager": Manager}),
     )
 
+    async def adapter(): return "hci1"
+    monkeypatch.setattr(ble, "_bluez_adapter", adapter)
     result = await ble._scan_by_address("00:11:22:33:44:55", 30)
 
     assert result is expected
@@ -324,3 +327,26 @@ async def test_hung_disconnect_still_force_closes_client(monkeypatch):
     device = Device()
     await asyncio.wait_for(controller._disconnect_device(device), 1)
     assert not device._client.is_connected
+
+@pytest.mark.parametrize('powered', [True, False])
+async def test_adapter_lookup_uses_current_bluez_objects(monkeypatch, powered):
+    from types import SimpleNamespace
+    from dbus_next.constants import MessageType
+    from dbus_next.signature import Variant
+    class Bus:
+        closed = False
+        async def connect(self): return self
+        async def call(self, message):
+            assert message.member == 'GetManagedObjects'
+            return SimpleNamespace(message_type=MessageType.METHOD_RETURN, body=[{
+                '/org/bluez/hci1': {'org.bluez.Adapter1': {'Powered': Variant('b', powered)}}
+            }])
+        def disconnect(self): self.closed = True
+    bus = Bus()
+    monkeypatch.setattr('dbus_next.aio.MessageBus', lambda **kwargs: bus)
+    if powered:
+        assert await ble._bluez_adapter() == 'hci1'
+    else:
+        with pytest.raises(ConnectionError, match='No powered'):
+            await ble._bluez_adapter()
+    assert bus.closed
