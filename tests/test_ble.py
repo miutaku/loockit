@@ -289,3 +289,38 @@ async def test_connection_observability_records_phase_and_elapsed_time(
     assert any("phase=gatt_connect elapsed_seconds=" in m for m in messages)
     assert any("phase=login_wait elapsed_seconds=" in m for m in messages)
     assert any("attempt completed device=intercom-bot attempt=1" in m for m in messages)
+
+async def test_hung_login_releases_shared_lock_and_disconnects(monkeypatch):
+    class Key:
+        def setSecretKey(self, value): pass
+        def setSesame2PublicKey(self, value): pass
+    class Device(FakeDevice):
+        def setKey(self, key): pass
+        def setDeviceStatusCallback(self, callback): pass
+        async def connect(self): pass
+        async def wait_for_login(self): await asyncio.Future()
+    device = Device(FakeStatus('NoBleSignal', 'UnLogin'))
+    async def scan(*args): return device
+    monkeypatch.setitem(__import__('sys').modules, 'pysesameos2.device', type('Module', (), {'CHDeviceKey': Key}))
+    monkeypatch.setattr(ble, '_scan_by_address', scan)
+    monkeypatch.setattr(ble, '_LOGIN_TIMEOUT', 0.01)
+    lock = asyncio.Lock()
+    controller = BleController(DeviceConfig(id='bot', model=DeviceModel.SESAME_BOT1, ble_address='00:11:22:33:44:55', secret_key='secret', public_key='public'), operation_lock=lock)
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(controller._open_session(), 1)
+    assert device.disconnected
+    assert not lock.locked()
+    assert not controller._connecting
+
+async def test_hung_disconnect_still_force_closes_client(monkeypatch):
+    class Client:
+        is_connected = True
+        async def disconnect(self): self.is_connected = False
+    class Device:
+        _client = Client()
+        async def disconnect(self): await asyncio.Future()
+    monkeypatch.setattr(ble, '_DISCONNECT_TIMEOUT', 0.01)
+    controller = BleController(DeviceConfig(id='bot', model=DeviceModel.SESAME_BOT1, ble_address='00:11:22:33:44:55'))
+    device = Device()
+    await asyncio.wait_for(controller._disconnect_device(device), 1)
+    assert not device._client.is_connected

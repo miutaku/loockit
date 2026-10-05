@@ -31,6 +31,9 @@ logger = logging.getLogger(__name__)
 
 _RECONNECT_BASE = 2.0
 _RECONNECT_MAX = 60.0
+_CONNECT_TIMEOUT = 20.0
+_LOGIN_TIMEOUT = 15.0
+_DISCONNECT_TIMEOUT = 5.0
 
 
 async def _scan_by_address(ble_address: str, scan_duration: int):
@@ -38,7 +41,9 @@ async def _scan_by_address(ble_address: str, scan_duration: int):
     from bleak import BleakScanner
     from pysesameos2.ble import CHBleManager
 
-    devices = await BleakScanner.discover(timeout=scan_duration)
+    devices = await asyncio.wait_for(
+        BleakScanner.discover(timeout=scan_duration), timeout=scan_duration + 10
+    )
     discovered = next(
         (device for device in devices if device.address.lower() == ble_address.lower()),
         None,
@@ -150,7 +155,7 @@ class BleController(DeviceController):
                     attempt,
                     phase,
                 )
-                await device.connect()
+                await asyncio.wait_for(device.connect(), timeout=_CONNECT_TIMEOUT)
                 logger.info(
                     "BLE connection phase completed device=%s attempt=%d "
                     "phase=%s elapsed_seconds=%.3f",
@@ -166,7 +171,7 @@ class BleController(DeviceController):
                     attempt,
                     phase,
                 )
-                await device.wait_for_login()
+                await asyncio.wait_for(device.wait_for_login(), timeout=_LOGIN_TIMEOUT)
                 logger.info(
                     "BLE connection phase completed device=%s attempt=%d "
                     "phase=%s elapsed_seconds=%.3f",
@@ -219,6 +224,9 @@ class BleController(DeviceController):
                 raise
             finally:
                 self._connecting = False
+                if self._device is None:
+                    self._state = self._state.evolve(online=False)
+                    self._emit(self._state)
 
     async def _disconnect_device(self, device) -> None:
         disconnect = getattr(device, "disconnect", None)
@@ -226,7 +234,7 @@ class BleController(DeviceController):
             try:
                 result = disconnect()
                 if asyncio.iscoroutine(result):
-                    await result
+                    await asyncio.wait_for(result, timeout=_DISCONNECT_TIMEOUT)
             except Exception:  # pragma: no cover - best-effort teardown
                 logger.debug("error during disconnect", exc_info=True)
 
@@ -240,7 +248,7 @@ class BleController(DeviceController):
         try:
             result = client.disconnect()
             if asyncio.iscoroutine(result):
-                await result
+                await asyncio.wait_for(result, timeout=_DISCONNECT_TIMEOUT)
         except Exception:  # pragma: no cover - best-effort teardown
             logger.debug("error during forced BLE client disconnect", exc_info=True)
 
@@ -253,7 +261,12 @@ class BleController(DeviceController):
     async def disconnect(self) -> None:
         self._closing = True
         if self._reconnect_task is not None:
-            self._reconnect_task.cancel()
+            task = self._reconnect_task
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
             self._reconnect_task = None
         await self._close_current_device()
         self._state = self._state.evolve(online=False)

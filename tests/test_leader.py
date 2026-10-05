@@ -356,3 +356,21 @@ async def test_ble_becomes_service_endpoint_only_after_online():
 
     assert labels == [True]
     assert elector._serving is True
+
+async def test_hung_activation_is_cancelled_and_yields():
+    cancelled = asyncio.Event()
+    async def activate():
+        try:
+            await asyncio.Future()
+        finally:
+            cancelled.set()
+    elector = KubernetesLeaseElector.__new__(KubernetesLeaseElector)
+    elector.identity = 'hung'
+    elector.on_acquired = activate
+    elector.activation_timeout = 0.01
+    elector._yield_requested = False
+    elector._serving = False
+    await asyncio.wait_for(elector._activate(), 1)
+    assert cancelled.is_set()
+    assert elector._yield_requested
+    assert not elector._serving

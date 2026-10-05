@@ -82,7 +82,11 @@ class Application:
 
     async def _activate(self) -> None:
         if not self._active:
-            await self.manager.start()
+            try:
+                await self.manager.start()
+            except BaseException:
+                await self.manager.stop()
+                raise
             self._active = True
 
     async def _deactivate(self) -> None:
@@ -115,7 +119,7 @@ class Application:
                 bearer_token=self.config.rest.bearer_token,
                 rate_limit_requests=self.config.rest.rate_limit_requests,
                 rate_limit_window_seconds=self.config.rest.rate_limit_window_seconds,
-                is_active=lambda: self._active,
+                is_active=lambda: self._active and self._ble_healthy(),
             )
             self._rest_server, self._rest_task = await serve_rest(
                 app, self.config.rest.host, self.config.rest.port

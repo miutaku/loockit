@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 class KubernetesLeaseElector:
     def __init__(self, identity, on_acquired, on_lost, is_healthy=None, *, lease_name="loockit-ble-leader", duration=15, retry_period=5.0,
-                 activation_timeout=90.0, unhealthy_grace=30.0, failure_cooldown=180.0,
+                 activation_timeout=180.0, unhealthy_grace=30.0, failure_cooldown=180.0,
                  label_active_pod=True):
         self.identity, self.on_acquired, self.on_lost = identity, on_acquired, on_lost
         self.lease_name, self.duration, self.retry_period = lease_name, duration, retry_period
@@ -168,8 +168,8 @@ class KubernetesLeaseElector:
 
     async def _activate(self):
         try:
-            await self.on_acquired()
-            deadline = asyncio.get_running_loop().time() + getattr(self, "activation_timeout", 90.0)
+            deadline = asyncio.get_running_loop().time() + getattr(self, "activation_timeout", 180.0)
+            await asyncio.wait_for(self.on_acquired(), timeout=getattr(self, "activation_timeout", 180.0))
             while self.is_leader and not self._stopping and not self._healthy():
                 if asyncio.get_running_loop().time() >= deadline:
                     logger.warning("BLE did not become healthy on %s; yielding leadership", self.identity)
