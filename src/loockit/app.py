@@ -96,6 +96,11 @@ class Application:
 
     def _ble_healthy(self) -> bool:
         states = self.manager.all_states()
+        required = set(filter(None, (value.strip() for value in
+            os.environ.get("LOOCKIT_REQUIRED_DEVICES", "").split(","))))
+        if required:
+            online = {state.device_id for state in states if state.online}
+            return required <= online
         # Keep the API available when at least one independently reconnecting
         # BLE device is online. A weak peripheral must not make healthy devices
         # disappear behind an empty Kubernetes Service endpoint.
